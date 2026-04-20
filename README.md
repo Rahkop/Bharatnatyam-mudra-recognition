@@ -1,66 +1,93 @@
- AI-Powered Fitness Assistant
+Bharatanatyam Mudra Recognition using MediaPipe
 
-An intelligent full-stack AI fitness system that combines computer vision, machine learning, and web technologies to provide real-time workout tracking, performance analysis, diet recommendations, and personalized fitness guidance.
+Project Overview
 
+This project implements a Bharatanatyam hand gesture (mudra) recognition system using MediaPipe and machine learning. It detects hand landmarks from images and uses them to train a classifier that can recognize different mudras. The system also includes a real-time webcam demo for live prediction.
 
+Features
 
- Features
+* Hand landmark detection using MediaPipe
+* Dataset-based training for multiple mudras
+* Machine learning model using Random Forest
+* Real-time webcam-based mudra recognition
+* Modular and easy-to-understand code structure
 
-1. AI Gym Trainer (Workout Detection & Feedback)
+Project Structure
 
-* Real-time pose detection using MediaPipe
-* Tracks:
-    * Squats
-    * Bicep Curls
-    * Pushups
-* Counts repetitions automatically
-* Displays live performance score
-* Uses joint angle analysis for movement tracking
+bharatanatyam-mudra-recognition/
+│
+├── dataset/                # Contains image data organized by class
+├── models/                 # Stores trained models and scripts
+│   ├── train_model.py
+│   ├── test_model.py
+│   ├── live_demo.py
+│   └── requirements.txt
+├── mp-env/                 # Virtual environment (not required to share)
+└── README.md
 
+Requirements
 
+Install dependencies using:
+pip install -r models/requirements.txt
 
- 2. Pose-to-Performance Analyzer
+Main libraries used:
 
-* Calculates performance score based on movement quality
-* Evaluates workout depth and consistency
-* Displays live feedback on screen
+* mediapipe
+* opencv-python
+* numpy
+* scikit-learn
+* joblib
 
+Dataset Preparation
 
- 3. AI Dietician & Calorie Coach
+* Place dataset inside the dataset/ folder.
+* Each mudra should have its own folder.
+* Example:
+    dataset/
+    pataka/
+    tripataka/
+    katakamukha/
+* Each folder should contain 10–30 images for initial testing.
 
-* Calculates BMI (Body Mass Index)
-* Suggests calorie intake based on:
-    * Weight goals (loss/gain/maintain)
-* Provides basic diet guidance
+How to Run
 
+1. Activate Virtual Environment
 
- 4. Virtual Gym Buddy (AI Chatbot)
+Windows:
+mp-env\Scripts\activate
 
-* Simple conversational assistant
-* Provides:
-    * Motivation
-    * Fitness tips
-    * Emotional support
+2. Train the Model
 
+cd models
+python train_model.py
 
- 5. AI Fitness Habit Tracker
+3. Test the Model
 
-* Displays workout reminders
-* Encourages consistency and discipline
+python test_model.py
 
+4. Run Live Demo
 
- 6. Gym Recommender & Planner
+python live_demo.py
 
-* Suggests nearby gyms based on user input (city)
-* Helps users plan their workouts
+Output
 
-⸻
+* Trained model is saved in the models/ folder.
+* Terminal displays training accuracy.
+* Live demo opens webcam and shows predicted mudra.
 
- 7. Workout Report Generator
+Current Status
 
-* Saves workout session data in JSON format
-* Tracks:
-    * Reps
-    * Performance score
-    * Date
-* Displays history in dashboard
+* Dataset preparation completed
+* Feature extraction using MediaPipe implemented
+* Model training and evaluation working
+* Real-time detection implemented
+
+Future Improvements
+
+* Use larger dataset for better accuracy
+* Implement deep learning (CNN + LSTM)
+* Add UI similar to Duolingo for guided learning
+* Improve multi-hand and complex mudra recognition
+
+Author
+Rahithya Koppolu
