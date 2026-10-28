@@ -1,82 +1,162 @@
+
 import cv2
 import joblib
 import numpy as np
 import mediapipe as mp
 import time
-import os
+import threading
+import tkinter as tk
+
+from ui.chat_interface import MudraTutorChat
+
 
 MODEL_PATH = "models/svm_mudra.pkl"
 CLASSES_PATH = "dataset/classes.npy"
 
+# Load your existing trained model and class names.
 model = joblib.load(MODEL_PATH)
 classes = np.load(CLASSES_PATH, allow_pickle=True)
 
-mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=1,
-    min_detection_confidence=0.6,
-    min_tracking_confidence=0.6
-)
-mp_draw = mp.solutions.drawing_utils
+# Shared state: latest webcam prediction for the AI tutor.
+latest_prediction = {
+    "mudra": None,
+    "confidence": None,
+}
+
+prediction_lock = threading.Lock()
+stop_event = threading.Event()
+
 
 def landmarks_to_features(landmarks):
+    """Convert 21 hand landmarks into the existing 63-value feature vector."""
     xs = [lm.x for lm in landmarks]
     ys = [lm.y for lm in landmarks]
     zs = [lm.z for lm in landmarks]
+
     cx, cy, cz = np.mean(xs), np.mean(ys), np.mean(zs)
+
     vec = []
     for x, y, z in zip(xs, ys, zs):
         vec += [x - cx, y - cy, z - cz]
+
     return np.array(vec, dtype=np.float32).reshape(1, -1)
 
-cap = cv2.VideoCapture(0)
 
-# reduce resolution for stability
-cap.set(3, 640)
-cap.set(4, 480)
+def get_current_prediction():
+    """Safely return the most recent prediction to the chat interface."""
+    with prediction_lock:
+        return latest_prediction.copy()
 
-prev = time.time()
 
-while True:
-    ok, frame = cap.read()
-    if not ok:
-        continue
+def run_webcam():
+    """Run the existing live mudra recognition in a background thread."""
+    mp_hands = mp.solutions.hands
+    mp_draw = mp.solutions.drawing_utils
 
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    res = hands.process(rgb)
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-    label = "No hand"
-    confidence = 0
+    if not cap.isOpened():
+        print("Error: Could not open webcam.")
+        cap.release()
+        return
 
-    if res.multi_hand_landmarks:
-        lms = res.multi_hand_landmarks[0].landmark
-        feats = landmarks_to_features(lms)
-        pred = int(model.predict(feats)[0])
-        conf = model.predict_proba(feats)[0][pred]
-        label = f"{classes[pred]} ({conf*100:.1f}%)"
+    prev = time.time()
 
-        mp_draw.draw_landmarks(
-            frame,
-            res.multi_hand_landmarks[0],
-            mp_hands.HAND_CONNECTIONS
-        )
+    try:
+        with mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            min_detection_confidence=0.6,
+            min_tracking_confidence=0.6,
+        ) as hands:
 
-    now = time.time()
-    fps = 1 / (now - prev)
-    prev = now
+            while not stop_event.is_set():
+                ok, frame = cap.read()
 
-    cv2.putText(frame, label, (20, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,255,0), 2)
-    cv2.putText(frame, f"FPS: {int(fps)}", (20, 80),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,0), 2)
+                if not ok:
+                    time.sleep(0.02)
+                    continue
 
-    cv2.imshow("Bharatanatyam Mudra Recognition", frame)
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                res = hands.process(rgb)
 
-    k = cv2.waitKey(1)
-    if k == ord('q'):
-        break
+                label = "No hand"
+                current_mudra = None
+                confidence = None
 
-cap.release()
-cv2.destroyAllWindows()
+                if res.multi_hand_landmarks:
+                    landmarks = res.multi_hand_landmarks[0].landmark
+                    features = landmarks_to_features(landmarks)
 
+                    pred = int(model.predict(features)[0])
+                    probabilities = model.predict_proba(features)[0]
+                    confidence = float(probabilities[pred])
+
+                    current_mudra = str(classes[pred])
+                    label = (
+                        f"{current_mudra} "
+                        f"({confidence * 100:.1f}%)"
+                    )
+
+                    mp_draw.draw_landmarks(
+                        frame,
+                        res.multi_hand_landmarks[0],
+                        mp_hands.HAND_CONNECTIONS,
+                    )
+
+                # Publish the latest prediction for the AI tutor.
+                with prediction_lock:
+                    latest_prediction["mudra"] = current_mudra
+                    latest_prediction["confidence"] = confidence
+
+                now = time.time()
+                fps = 1 / max(now - prev, 1e-6)
+                prev = now
+
+                cv2.putText(
+                    frame, label, (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9,
+                    (0, 255, 0), 2,
+                )
+                cv2.putText(
+                    frame, f"FPS: {int(fps)}", (20, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                    (255, 255, 0), 2,
+                )
+
+                cv2.imshow("Bharatanatyam Mudra Recognition", frame)
+
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    stop_event.set()
+                    break
+
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+
+def main():
+    # Start webcam recognition in the background.
+    webcam_thread = threading.Thread(
+        target=run_webcam,
+        daemon=True,
+    )
+    webcam_thread.start()
+
+    # Keep Tkinter running on the main thread.
+    root = tk.Tk()
+
+    MudraTutorChat(
+        root,
+        context_provider=get_current_prediction,
+        on_close=stop_event.set,
+    )
+
+    root.mainloop()
+    stop_event.set()
+
+
+if __name__ == "__main__":
+    main()

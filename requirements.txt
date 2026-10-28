@@ -7,3 +7,5 @@ matplotlib
 seaborn
 joblib
 pygame
+google-genai
+python-dotenv
