@@ -9,3 +9,5 @@ joblib
 pygame
 google-genai
 python-dotenv
+Pillow
+requests
