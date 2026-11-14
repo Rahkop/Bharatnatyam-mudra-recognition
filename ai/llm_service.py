@@ -26,7 +26,27 @@ class GeminiLLMService:
             "GEMINI_MODEL", "gemini-flash-latest"
         )
 
-        self.client = genai.Client(api_key=api_key)
+
+        self.client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(
+                timeout=120000,
+                retry_options=types.HttpRetryOptions(
+                    initial_delay=1.0,
+                    attempts=4,
+                    max_delay=8.0,
+                    http_status_codes=[
+                        408,
+                        429,
+                        500,
+                        502,
+                        503,
+                        504,
+                    ],
+                ),
+            ),
+        )
+
 
     def generate_response(
         self,
@@ -98,9 +118,12 @@ class GeminiLLMService:
                     history=formatted_history,
                     config=config,
                 )
+                print(f"[DEBUG] Sending request to Gemini: {model_name}")
 
                 response = chat.send_message(message=message)
+                print("[DEBUG] Gemini request completed")
                 answer = response.text
+                print("[DEBUG] Gemini response extracted")
 
                 if not answer or not answer.strip():
                     raise RuntimeError(
@@ -109,12 +132,26 @@ class GeminiLLMService:
 
                 return answer.strip()
 
+
             except Exception as exc:
                 last_error = exc
 
-                # Use the fallback only for temporary server overloads.
-                if "503" not in str(exc):
-                    break
+                print(
+                    f"[ERROR] Model {model_name} failed: "
+                    f"{type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+
+                # Try the next configured model if available.
+                if model_name != models_to_try[-1]:
+                    print(
+                        "[DEBUG] Trying fallback model...",
+                        flush=True,
+                    )
+                    continue
+
+                break
+
 
         raise RuntimeError(
             f"Gemini request failed after trying the configured model(s): "
