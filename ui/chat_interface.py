@@ -1,12 +1,18 @@
-
 import queue
 import threading
 import tkinter as tk
+
+
+from pathlib import Path
 from tkinter import messagebox, scrolledtext
 
+
+
 from ai.mudra_tutor import MudraTutor
-from ui.image_panel import MudraImagePanel
-from ai.image_generator import CloudflareImageGenerator
+from ui.image_panel import (
+    StaticMudraImageWindow,
+    MudraImageSelectionController,
+)
 
 class MudraTutorChat:
     """Desktop chat interface for the unified Bharatanatyam tutor."""
@@ -29,11 +35,9 @@ class MudraTutorChat:
         self.messages = queue.Queue()
         self.busy = False
         self.closed = False
-        # Track mudras currently being generated.
-        self.image_generation_in_progress = set()
 
-        # Store dynamically generated image paths.
-        self.generated_image_cache = {}
+        self.camera_session_active = False
+    
 
 
         # Teaching context
@@ -47,6 +51,44 @@ class MudraTutorChat:
 
         # Image panel ownership
         self.image_display_context = None
+
+        self.selection_version = 0
+
+        # Static mudra image window
+        # Centralized static mudra image window
+        self.image_controller = None
+        self.selected_image_mudra = None
+
+        # Dataset directory
+        self.project_root = Path(__file__).resolve().parent.parent
+
+        dataset_candidates = [
+            self.project_root / "dataset",
+            self.project_root / "recognition" / "dataset",
+            Path.cwd() / "dataset",
+        ]
+
+        self.dataset_dir = next(
+            (
+                path for path in dataset_candidates
+                if path.is_dir()
+            ),
+            dataset_candidates[0]
+        )
+
+
+        # Create the static image window.
+        self.static_image_window = StaticMudraImageWindow(
+            self.root,
+            dataset_path=self.dataset_dir
+        )
+
+        # Create the shared image-selection controller.
+        self.image_controller = MudraImageSelectionController(
+            self.static_image_window
+        )
+
+        self.selected_image_mudra = None
 
         # Camera state
         self.camera_active = False
@@ -99,137 +141,55 @@ class MudraTutorChat:
             self._set_status("Ready")
 
     def hide_mudra_images(self):
-        # Remove previous images
-        self.image_panel.clear()
+        """Clear the static image selection."""
 
-        # Hide the entire image panel
-        self.image_panel.pack_forget()
+        self.selected_image_mudra = None
+        self.image_display_context = None
 
-        # Reset the current mudra
-        self.current_teaching_mudra = None
-
-
-
-    def _generate_mudra_image(self, mudra_name):
-
-        try:
-
-            generator = CloudflareImageGenerator()
-
-            image_path = generator.generate_image(
-                mudra_name
-            )
-
-            self.messages.put(
-                (
-                    "image_generated",
-                    (mudra_name, image_path)
-                )
-            )
-
-        except Exception as exc:
-
-            self.messages.put(
-                (
-                    "image_generation_error",
-                    (mudra_name, str(exc))
-                )
-            )
-
-
-
-
-    def _request_mudra_image(self, mudra_name):
-
-        if not mudra_name:
-            return
-
-        # Display the image panel.
-        self.image_panel.pack(
-            side="right",
-            fill="y",
-            padx=(5, 0)
-        )
-
-        # Check whether this image was already generated.
-        cached_image = self.generated_image_cache.get(
-            mudra_name
-        )
-
-        if cached_image:
-            import os
-
-            if os.path.isfile(cached_image):
-
-                self.image_panel.set_mudra(
-                    mudra_name,
-                    generated_image_path=cached_image
-                )
-
-                return
-
-        # Display loading message if image is not cached.
-        self.image_panel.set_mudra(
-            mudra_name,
-            status_message=(
-                "Generating your mudra illustration...\n\n"
-                "Please wait."
-            )
-        )
-
-        # Avoid duplicate simultaneous requests.
-        if mudra_name in self.image_generation_in_progress:
-            return
-
-        self.image_generation_in_progress.add(mudra_name)
-
-        # Generate image in background thread.
-        threading.Thread(
-            target=self._generate_mudra_image,
-            args=(mudra_name,),
-            daemon=True
-        ).start()
+        if self.image_controller is not None:
+            self.image_controller.clear()
 
 
 
     def show_mudra_images(self, mudra_name):
-        """
-        Update teaching context.
-
-        Teaching can update while the camera is active,
-        but it must not replace the practice image.
-        """
+        """Display images selected explicitly through text."""
 
         if not mudra_name:
             return
 
         self.current_teaching_mudra = mudra_name
+        self.selected_image_mudra = mudra_name
 
-        # Practice owns the panel while the camera is active.
-        if self.camera_active:
-            return
-
+        # Track image ownership separately from camera activity.
         self.image_display_context = "teaching"
 
-        self._request_mudra_image(mudra_name)
+        if self.image_controller is not None:
+            self.image_controller.select_text_mudra(
+                mudra_name
+            )
+
 
     def show_practice_mudra_images(self, mudra_name):
-        """
-        Display the currently detected practice mudra.
-        """
+        """Display images for camera-recognized mudras."""
 
         if not mudra_name:
             return
 
-        self.detected_mudra = mudra_name
-
-        # Practice images should only appear during camera practice.
         if not self.camera_active:
             return
 
-        self.image_display_context = "practice"
+        # Do not assign detected_mudra here.
+        # Actual detection is handled by _on_stable_mudra_detected().
 
-        self._request_mudra_image(mudra_name)
+        if self.image_controller is not None:
+
+            updated = self.image_controller.select_camera_mudra(
+                mudra_name
+            )
+
+            if updated:
+                self.selected_image_mudra = mudra_name
+                self.image_display_context = "practice"
         
     def _build_interface(self):
         header = tk.Frame(self.root, bg="#10232F")
@@ -335,11 +295,6 @@ class MudraTutorChat:
             padx=(0, 10),
         )
 
-        # Mudra reference image panel
-        self.image_panel = MudraImagePanel(
-            self.content_frame,
-            library_path="mudra_library"
-        )
 
         self.chat_area.tag_configure(
             "speaker",
@@ -569,26 +524,33 @@ class MudraTutorChat:
 
 
 
-    # Identify whether the learner requested a new teaching mudra.
-        requested_mudra = self.image_panel.get_mudra_from_question(
+# Identify whether the learner mentioned a mudra.
+        requested_mudra = StaticMudraImageWindow.get_mudra_from_question(
             question
         )
 
         if requested_mudra:
 
-            # Update the teaching topic.
+            # A new mudra was explicitly mentioned.
+            # Update the teaching context and static image window.
+
+            print(f"Text-selected mudra: {requested_mudra}")
+
             self.show_mudra_images(requested_mudra)
 
-        elif self.current_teaching_mudra:
+        else:
 
-            # Follow-up question.
-            # Update teaching context without taking over
-            # the image panel during active camera practice.
-            self.show_mudra_images(
-                self.current_teaching_mudra
+            # No mudra mentioned.
+            # This is a follow-up question.
+            # Do not clear, hide, or reload the previous images.
+
+            print(
+                "Follow-up question detected. "
+                f"Retaining images for: {self.selected_image_mudra}"
             )
 
-
+        # If the camera is active and the question contains
+        # no mudra name, do not change the current images.
 
 
         self.input_box.delete("1.0", tk.END)
@@ -608,12 +570,14 @@ class MudraTutorChat:
 
     def _ask_tutor(self, question, learning_level):
         try:
+            print("[DEBUG] Tutor request started")
             context = {}
 
             if self.context_provider is not None:
                 context = self.context_provider() or {}
 
             camera_active = context.get("camera_active", False)
+            print("[DEBUG] Calling tutor.ask()")
 
             answer = self.tutor.ask(
                 question,
@@ -627,9 +591,13 @@ class MudraTutorChat:
                 ),
                 learning_level=learning_level,
             )
+            print("[DEBUG] Tutor response received")
+            print("[DEBUG] Response length:", len(answer))
+
             self.messages.put(("answer", answer))
 
         except Exception as exc:
+            print("[ERROR] Tutor request failed:", repr(exc))
             self.messages.put(("error", str(exc)))
 
     def _process_messages(self):
@@ -658,71 +626,6 @@ class MudraTutorChat:
                     self._set_status("Ready")
                     self._start_pending_practice_feedback()
 
-
-                elif kind == "image_generated":
-
-                    mudra_name, image_path = payload
-
-                    self.image_generation_in_progress.discard(
-                        mudra_name
-                    )
-
-                    # Save the dynamically generated image path.
-                    self.generated_image_cache[mudra_name] = image_path
-
-                    # Display only if this is still the selected image.
-                    if self.image_panel.current_mudra == mudra_name:
-
-                        self.image_panel.set_mudra(
-                            mudra_name,
-                            generated_image_path=image_path
-                        )
-
-                        self._set_status(
-                            f"Image generated for {mudra_name}."
-                        )
-
-
-                elif kind == "image_generation_error":
-
-                    mudra_name, error = payload
-
-                    self.image_generation_in_progress.discard(
-                        mudra_name
-                    )
-
-                    print(
-                        f"Cloudflare image generation failed: {error}"
-                    )
-
-                    if self.image_panel.current_mudra == mudra_name:
-
-                        error_message = str(error)
-
-                        if "8007" in error_message:
-
-                            status = (
-                                "Cloudflare rejected the image prompt.\n\n"
-                                "Please try again with a different "
-                                "educational description."
-                            )
-
-                        else:
-
-                            status = (
-                                "Image generation failed.\n\n"
-                                "Please check your Cloudflare API "
-                                "credentials, account and quota."
-                            )
-
-                        self.image_panel.set_mudra(
-                            mudra_name,
-                            status_message=status
-                        )
-
-                        self._set_status(
-                            "Image generation unavailable."
-                        )
 
                 elif kind == "error":
                     self._show_message(
@@ -787,10 +690,34 @@ class MudraTutorChat:
         self.image_display_context = None
 
         self.detected_mudra = None
-        self.camera_active = False
 
-        self.image_panel.clear()
-        self.image_panel.pack_forget()
+        # Stop the actual camera-processing system.
+        if self.camera_session_active and self.on_camera_stop:
+            self.on_camera_stop()
+
+        self.camera_active = False
+        self.camera_session_active = False
+
+        # Reset camera prediction stability.
+        self.candidate_mudra = None
+        self.candidate_count = 0
+        self.stable_mudra = None
+
+        # Reset practice state.
+        self.practice_target_mudra = None
+        self.pending_practice_mudra = None
+
+        # Reset camera controls.
+        self.camera_start_button.configure(
+            state=tk.NORMAL
+        )
+
+        self.camera_stop_button.configure(
+            state=tk.DISABLED
+        )
+
+        # Clear the image selection.
+        self.hide_mudra_images()
 
         self._show_message(
             "Tutor",
@@ -811,6 +738,11 @@ class MudraTutorChat:
                 daemon=True,
             ).start()
 
+        # Close the separate mudra image window.
+# Close the separate static image window.
+        if self.image_controller is not None:
+            self.image_controller.close()
+
         self.root.destroy()
 
     def _start_camera(self):
@@ -830,11 +762,16 @@ class MudraTutorChat:
 
             self.camera_active = True
 
+            self.camera_session_active = True
+
             self.image_display_context = "practice"
 
-# Initially display the intended practice target.
+            # Enable camera selection and clear previous text priority.
+            self.image_controller.start_camera()
+
+            # Initially display the intended practice target.
             if self.practice_target_mudra:
-                self._request_mudra_image(
+                self.show_practice_mudra_images(
                     self.practice_target_mudra
                 )
 
@@ -879,6 +816,8 @@ class MudraTutorChat:
         # Stop camera state.
         self.camera_active = False
 
+        self.camera_session_active = False
+
         # Reset practice context.
         self.practice_target_mudra = None
         self.detected_mudra = None
@@ -892,16 +831,18 @@ class MudraTutorChat:
         # Clear pending automatic feedback.
         self.pending_practice_mudra = None
 
-        # Restore the teaching image if a lesson is active.
+        # Restore teaching images after camera practice.
+        # Restore teaching images after camera practice.
+        self.image_controller.stop_camera(
+            teaching_mudra=self.current_teaching_mudra
+        )
+
         if self.current_teaching_mudra:
-
-            self.show_mudra_images(
-                self.current_teaching_mudra
-            )
-
+            self.selected_image_mudra = self.current_teaching_mudra
+            self.image_display_context = "teaching"
         else:
-            self.image_panel.clear()
-            self.image_panel.pack_forget()
+            self.selected_image_mudra = None
+            self.image_display_context = None
 
         self._set_status("Camera practice stopped.")
 
@@ -991,7 +932,7 @@ class MudraTutorChat:
         # Update actual camera detection.
         self.detected_mudra = mudra
 
-        # Display the detected mudra's generated image.
+       # Display the detected mudra's static dataset reference images.
         self.show_practice_mudra_images(mudra)
 
         print("Teaching Mudra:", self.current_teaching_mudra)

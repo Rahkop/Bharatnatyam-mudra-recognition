@@ -182,11 +182,16 @@ Concentrate on formation, meaning, usage and corrections.
         # Keep the latest six exchanges.
         recent_history = self.history[-12:]
 
+        print("[DEBUG] Previous history:", len(self.history), flush=True)
+
         answer = self.llm.generate_response(
             message=prompt,
             history=recent_history,
             system_instruction=self.system_instruction,
         )
+
+
+        print("[DEBUG] Tutor answer received", flush=True)
 
         self.history.extend([
             {"role": "user", "content": prompt},
