@@ -21,25 +21,62 @@ classes = np.load(CLASSES_PATH, allow_pickle=True)
 latest_prediction = {
     "mudra": None,
     "confidence": None,
+    "camera_active": False,
 }
 
 prediction_lock = threading.Lock()
 stop_event = threading.Event()
+webcam_thread = None
+
+
+def make_square_frame(frame):
+
+    height, width = frame.shape[:2]
+
+    size = max(height, width)
+
+    top = (size - height) // 2
+    bottom = size - height - top
+
+    left = (size - width) // 2
+    right = size - width - left
+
+    square_frame = cv2.copyMakeBorder(
+        frame,
+        top,
+        bottom,
+        left,
+        right,
+        cv2.BORDER_CONSTANT,
+        value=(0, 0, 0)
+    )
+
+    return square_frame, top, left, size
 
 
 def landmarks_to_features(landmarks):
-    """Convert 21 hand landmarks into the existing 63-value feature vector."""
+
     xs = [lm.x for lm in landmarks]
     ys = [lm.y for lm in landmarks]
     zs = [lm.z for lm in landmarks]
 
-    cx, cy, cz = np.mean(xs), np.mean(ys), np.mean(zs)
+    cx = np.mean(xs)
+    cy = np.mean(ys)
+    cz = np.mean(zs)
 
     vec = []
-    for x, y, z in zip(xs, ys, zs):
-        vec += [x - cx, y - cy, z - cz]
 
-    return np.array(vec, dtype=np.float32).reshape(1, -1)
+    for x, y, z in zip(xs, ys, zs):
+        vec += [
+            x - cx,
+            y - cy,
+            z - cz
+        ]
+
+    return np.array(
+        vec,
+        dtype=np.float32
+    ).reshape(1, -1)
 
 
 def get_current_prediction():
@@ -62,6 +99,9 @@ def run_webcam():
         cap.release()
         return
 
+    with prediction_lock:
+        latest_prediction["camera_active"] = True
+
     prev = time.time()
 
     try:
@@ -79,7 +119,17 @@ def run_webcam():
                     time.sleep(0.02)
                     continue
 
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                # Convert the frame into a square image without stretching.
+                square_frame, pad_top, pad_left, square_size = (
+                    make_square_frame(frame)
+                )
+
+                rgb = cv2.cvtColor(
+                    square_frame,
+                    cv2.COLOR_BGR2RGB
+                )
+
                 res = hands.process(rgb)
 
                 label = "No hand"
@@ -90,21 +140,31 @@ def run_webcam():
                     landmarks = res.multi_hand_landmarks[0].landmark
                     features = landmarks_to_features(landmarks)
 
-                    pred = int(model.predict(features)[0])
+                    pred = model.predict(features)[0]
                     probabilities = model.predict_proba(features)[0]
-                    confidence = float(probabilities[pred])
 
-                    current_mudra = str(classes[pred])
+                    class_index = np.where(model.classes_ == pred)[0][0]
+
+                    confidence = float(probabilities[class_index])
+
+                    current_mudra = str(classes[int(pred)])
                     label = (
                         f"{current_mudra} "
                         f"({confidence * 100:.1f}%)"
                     )
 
                     mp_draw.draw_landmarks(
-                        frame,
+                        square_frame,
                         res.multi_hand_landmarks[0],
                         mp_hands.HAND_CONNECTIONS,
                     )
+                    original_frame = frame.copy()
+
+                    # Remove the padding for normal webcam display.
+                    frame = square_frame[
+                        pad_top:pad_top + original_frame.shape[0],
+                        pad_left:pad_left + original_frame.shape[1]
+                    ].copy()
 
                 # Publish the latest prediction for the AI tutor.
                 with prediction_lock:
@@ -136,27 +196,49 @@ def run_webcam():
         cap.release()
         cv2.destroyAllWindows()
 
+        with prediction_lock:
+            latest_prediction["mudra"] = None
+            latest_prediction["confidence"] = None
+            latest_prediction["camera_active"] = False
 
-def main():
-    # Start webcam recognition in the background.
+
+def start_webcam():
+    global webcam_thread
+
+    if webcam_thread is not None and webcam_thread.is_alive():
+        return
+
+    stop_event.clear()
+
     webcam_thread = threading.Thread(
         target=run_webcam,
-        daemon=True,
+        daemon=True
     )
+
     webcam_thread.start()
 
-    # Keep Tkinter running on the main thread.
+
+def stop_webcam():
+    stop_event.set()
+
+def main():
     root = tk.Tk()
 
     MudraTutorChat(
         root,
         context_provider=get_current_prediction,
-        on_close=stop_event.set,
+        on_close=stop_webcam,
+        on_camera_start=start_webcam,
+        on_camera_stop=stop_webcam,
     )
 
     root.mainloop()
-    stop_event.set()
+
+    stop_webcam()
 
 
 if __name__ == "__main__":
     main()
+
+
+
